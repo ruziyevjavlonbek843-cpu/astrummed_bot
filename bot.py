@@ -10,12 +10,20 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# =========================================================
+# SOZLAMALAR
+# =========================================================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 TELEGRAM_CHANNEL = "@AstrumMED"
 TELEGRAM_CHANNEL_URL = "https://t.me/AstrumMED"
 YOUTUBE_URL = "https://youtube.com/@astrummed_1"
+
+# =========================================================
+# LOGGING
+# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -25,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# =========================
+# =========================================================
 # DATABASE
-# =========================
+# =========================================================
 
 def db():
     return psycopg.connect(DATABASE_URL)
@@ -47,18 +55,24 @@ def init_db():
             """)
         conn.commit()
 
+    logger.info("Database initialized successfully")
+
 
 def add_user(user_id, referred_by=None):
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO users (user_id, referred_by)
+                INSERT INTO users (
+                    user_id,
+                    referred_by
+                )
                 VALUES (%s, %s)
                 ON CONFLICT (user_id) DO NOTHING
                 """,
                 (user_id, referred_by),
             )
+
         conn.commit()
 
 
@@ -67,16 +81,18 @@ def get_user(user_id):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT user_id,
-                       referred_by,
-                       referral_count,
-                       referral_counted,
-                       telegram_verified
+                SELECT
+                    user_id,
+                    referred_by,
+                    referral_count,
+                    referral_counted,
+                    telegram_verified
                 FROM users
                 WHERE user_id = %s
                 """,
                 (user_id,),
             )
+
             return cur.fetchone()
 
 
@@ -91,15 +107,11 @@ def verify_user(user_id):
                 """,
                 (user_id,),
             )
+
         conn.commit()
 
 
 def count_referral(user_id):
-    """
-    Foydalanuvchi kanalga obuna bo'lganda,
-    uni taklif qilgan odamga 1 ta referral qo'shiladi.
-    """
-
     user = get_user(user_id)
 
     if not user:
@@ -120,7 +132,6 @@ def count_referral(user_id):
     with db() as conn:
         with conn.cursor() as cur:
 
-            # Bu foydalanuvchining referral'i hisoblanganini belgilash
             cur.execute(
                 """
                 UPDATE users
@@ -130,7 +141,6 @@ def count_referral(user_id):
                 (user_id,),
             )
 
-            # Taklif qilgan odamga +1
             cur.execute(
                 """
                 UPDATE users
@@ -142,10 +152,16 @@ def count_referral(user_id):
 
         conn.commit()
 
+    logger.info(
+        "Referral counted: user=%s referred_by=%s",
+        user_id,
+        referred_by
+    )
 
-# =========================
-# TELEGRAM OBUNANI TEKSHIRISH
-# =========================
+
+# =========================================================
+# TELEGRAM KANAL OBUNASINI TEKSHIRISH
+# =========================================================
 
 async def is_subscribed(bot, user_id):
 
@@ -153,6 +169,12 @@ async def is_subscribed(bot, user_id):
         member = await bot.get_chat_member(
             chat_id=TELEGRAM_CHANNEL,
             user_id=user_id
+        )
+
+        logger.info(
+            "Subscription status for %s: %s",
+            user_id,
+            member.status
         )
 
         return member.status in (
@@ -163,271 +185,324 @@ async def is_subscribed(bot, user_id):
         )
 
     except Exception as e:
-        logger.error("Subscription check error: %s", e)
+
+        logger.error(
+            "Subscription check error: %s",
+            e,
+            exc_info=True
+        )
+
         return False
 
 
-# =========================
+# =========================================================
 # START
-# =========================
+# =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = update.effective_user.id
-
-    referred_by = None
-
-    # /start 123456
-    if context.args:
-
-        try:
-            referred_by = int(context.args[0])
-
-            # O'zini o'zi taklif qilishni taqiqlash
-            if referred_by == user_id:
-                referred_by = None
-
-        except ValueError:
-            referred_by = None
-
-    add_user(
-        user_id=user_id,
-        referred_by=referred_by
-    )
-
-    keyboard = [
-
-        [
-            InlineKeyboardButton(
-                "📢 Telegram kanaliga obuna bo‘lish",
-                url=TELEGRAM_CHANNEL_URL
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "▶️ YouTube kanaliga obuna bo‘lish",
-                url=YOUTUBE_URL
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "✅ Obunani tekshirish",
-                callback_data="check"
-            )
-        ]
-
-    ]
-
-    text = (
-        "👋 Assalomu alaykum!\n\n"
-
-        "🎓 Maxsus materialga ega bo‘lish uchun "
-        "quyidagi shartlarni bajaring:\n\n"
-
-        "1️⃣ Telegram kanaliga obuna bo‘ling.\n"
-        "2️⃣ YouTube kanaliga obuna bo‘ling.\n"
-        "3️⃣ «Obunani tekshirish» tugmasini bosing.\n\n"
-
-        "Keyin sizga shaxsiy taklif havolangiz beriladi."
-    )
-
-    await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# =========================
-# OBUNANI TEKSHIRISH
-# =========================
-
-async def check_subscription(
+async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    query = update.callback_query
+    try:
 
-    await query.answer()
+        if not update.effective_user:
+            return
 
-    user_id = query.from_user.id
+        user_id = update.effective_user.id
 
-    subscribed = await is_subscribed(
-        context.bot,
-        user_id
-    )
+        referred_by = None
 
-    if not subscribed:
+        # /start 123456
+        if context.args:
+
+            try:
+
+                referred_by = int(context.args[0])
+
+                if referred_by == user_id:
+                    referred_by = None
+
+            except ValueError:
+
+                referred_by = None
+
+        add_user(
+            user_id=user_id,
+            referred_by=referred_by
+        )
 
         keyboard = [
 
             [
                 InlineKeyboardButton(
-                    "📢 Kanalga obuna bo‘lish",
+                    "📢 Telegram kanaliga obuna bo‘lish",
                     url=TELEGRAM_CHANNEL_URL
                 )
             ],
 
             [
                 InlineKeyboardButton(
-                    "🔄 Qayta tekshirish",
+                    "▶️ YouTube kanaliga obuna bo‘lish",
+                    url=YOUTUBE_URL
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "✅ Obunani tekshirish",
                     callback_data="check"
                 )
             ]
 
         ]
 
-        await query.edit_message_text(
-            "❌ Siz hali @AstrumMED kanaliga "
-            "obuna bo‘lmagansiz.\n\n"
-            "Avval kanalga obuna bo‘ling, "
-            "keyin «Qayta tekshirish»ni bosing.",
+        text = (
+            "👋 Assalomu alaykum!\n\n"
+
+            "🎓 Maxsus materialga ega bo‘lish uchun "
+            "quyidagi shartlarni bajaring:\n\n"
+
+            "1️⃣ Telegram kanaliga obuna bo‘ling.\n"
+            "2️⃣ YouTube kanaliga obuna bo‘ling.\n"
+            "3️⃣ «Obunani tekshirish» tugmasini bosing.\n\n"
+
+            "Keyin sizga shaxsiy taklif havolangiz beriladi."
+        )
+
+        await update.message.reply_text(
+            text,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-        return
+        logger.info(
+            "START received from user %s",
+            user_id
+        )
 
-    # Telegram obuna tasdiqlandi
-    verify_user(user_id)
+    except Exception as e:
 
-    # Agar bu odam kimningdir referral havolasi
-    # orqali kelgan bo'lsa, referral hisoblanadi
-    count_referral(user_id)
+        logger.error(
+            "START ERROR: %s",
+            e,
+            exc_info=True
+        )
 
-    user = get_user(user_id)
 
-    referral_count = user[2]
+# =========================================================
+# OBUNANI TEKSHIRISH
+# =========================================================
 
-    keyboard = [
+async def check_subscription(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-        [
-            InlineKeyboardButton(
-                "▶️ YouTube kanaliga o‘tish",
-                url=YOUTUBE_URL
+    try:
+
+        query = update.callback_query
+
+        await query.answer()
+
+        user_id = query.from_user.id
+
+        subscribed = await is_subscribed(
+            context.bot,
+            user_id
+        )
+
+        if not subscribed:
+
+            keyboard = [
+
+                [
+                    InlineKeyboardButton(
+                        "📢 Kanalga obuna bo‘lish",
+                        url=TELEGRAM_CHANNEL_URL
+                    )
+                ],
+
+                [
+                    InlineKeyboardButton(
+                        "🔄 Qayta tekshirish",
+                        callback_data="check"
+                    )
+                ]
+
+            ]
+
+            await query.edit_message_text(
+
+                "❌ Siz hali @AstrumMED kanaliga "
+                "obuna bo‘lmagansiz.\n\n"
+
+                "Avval kanalga obuna bo‘ling, "
+                "keyin «Qayta tekshirish»ni bosing.",
+
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
-        ],
 
-        [
-            InlineKeyboardButton(
-                "👥 5 ta do‘stni taklif qilish",
-                callback_data="referral"
-            )
+            return
+
+        verify_user(user_id)
+
+        count_referral(user_id)
+
+        user = get_user(user_id)
+
+        referral_count = user[2] if user else 0
+
+        keyboard = [
+
+            [
+                InlineKeyboardButton(
+                    "▶️ YouTube kanaliga o‘tish",
+                    url=YOUTUBE_URL
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "👥 5 ta do‘stni taklif qilish",
+                    callback_data="referral"
+                )
+            ]
+
         ]
 
-    ]
+        await query.edit_message_text(
 
-    await query.edit_message_text(
+            f"✅ Telegram obunangiz tasdiqlandi!\n\n"
 
-        f"✅ Telegram obunangiz tasdiqlandi!\n\n"
+            f"👥 Siz taklif qilgan do‘stlar: "
+            f"{referral_count}/5\n\n"
 
-        f"👥 Siz taklif qilgan do‘stlar: "
-        f"{referral_count}/5\n\n"
+            f"Endi YouTube kanalimizga ham obuna bo‘ling.\n\n"
 
-        f"Endi YouTube kanalimizga ham obuna bo‘ling.\n\n"
+            f"Keyin «5 ta do‘stni taklif qilish» tugmasini bosing.",
 
-        f"Keyin «5 ta do‘stni taklif qilish» tugmasini bosing.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+        logger.info(
+            "Subscription verified for user %s",
+            user_id
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "CHECK ERROR: %s",
+            e,
+            exc_info=True
+        )
 
 
-# =========================
+# =========================================================
 # REFERAL
-# =========================
+# =========================================================
 
 async def referral(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    query = update.callback_query
+    try:
 
-    await query.answer()
+        query = update.callback_query
 
-    user_id = query.from_user.id
+        await query.answer()
 
-    user = get_user(user_id)
+        user_id = query.from_user.id
 
-    if not user:
-        add_user(user_id)
         user = get_user(user_id)
 
-    referral_count = user[2]
+        if not user:
 
-    bot = await context.bot.get_me()
+            add_user(user_id)
 
-    referral_link = (
-        f"https://t.me/{bot.username}?start={user_id}"
-    )
+            user = get_user(user_id)
 
-    # Telegram share tugmasi
-    share_url = (
-        "https://t.me/share/url"
-        f"?url={referral_link}"
-        "&text=Maxsus material uchun botga kiring:"
-    )
+        referral_count = user[2]
 
-    # 5 ta odam bo'lsa
-    if referral_count >= 5:
+        bot = await context.bot.get_me()
+
+        referral_link = (
+            f"https://t.me/{bot.username}?start={user_id}"
+        )
+
+        share_url = (
+            "https://t.me/share/url"
+            f"?url={referral_link}"
+            "&text=Maxsus material uchun botga kiring:"
+        )
+
+        if referral_count >= 5:
+
+            await query.edit_message_text(
+
+                "🎉 TABRIKLAYMIZ!\n\n"
+
+                "✅ Barcha shartlar bajarildi!\n\n"
+
+                "👥 Siz 5 ta do‘stni muvaffaqiyatli "
+                "taklif qildingiz.\n\n"
+
+                "🎓 Endi maxsus materialdan foydalanishingiz mumkin."
+
+            )
+
+            return
+
+        keyboard = [
+
+            [
+                InlineKeyboardButton(
+                    "📤 Do‘stlarga yuborish",
+                    url=share_url
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔄 Natijani tekshirish",
+                    callback_data="referral"
+                )
+            ]
+
+        ]
 
         await query.edit_message_text(
 
-            "🎉 TABRIKLAYMIZ!\n\n"
+            f"👥 DO‘STLARNI TAKLIF QILING\n\n"
 
-            "✅ Barcha shartlar bajarildi!\n\n"
+            f"📊 Natija: {referral_count}/5\n\n"
 
-            "👥 Siz 5 ta do‘stni muvaffaqiyatli "
-            "taklif qildingiz.\n\n"
+            f"Quyidagi tugmani bosing va "
+            f"shaxsiy havolangizni 5 ta do‘stingizga yuboring.\n\n"
 
-            "🎓 Endi maxsus materialdan foydalanishingiz mumkin."
+            f"⚠️ Do‘stingiz havola orqali botga kirib, "
+            f"@AstrumMED kanaliga obuna bo‘lgandan keyin "
+            f"hisoblanadi.\n\n"
 
+            f"🔗 Sizning havolangiz:\n"
+            f"{referral_link}",
+
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-        return
+    except Exception as e:
 
-    keyboard = [
-
-        [
-            InlineKeyboardButton(
-                "📤 Do‘stlarga yuborish",
-                url=share_url
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "🔄 Natijani tekshirish",
-                callback_data="referral"
-            )
-        ]
-
-    ]
-
-    await query.edit_message_text(
-
-        f"👥 DO‘STLARNI TAKLIF QILING\n\n"
-
-        f"📊 Natija: {referral_count}/5\n\n"
-
-        f"Quyidagi tugmani bosing va "
-        f"shaxsiy havolangizni 5 ta do‘stingizga yuboring.\n\n"
-
-        f"⚠️ Do‘stingiz havola orqali botga kirib, "
-        f"@AstrumMED kanaliga obuna bo‘lgandan keyin "
-        f"hisoblanadi.\n\n"
-
-        f"🔗 Sizning havolangiz:\n"
-        f"{referral_link}",
-
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+        logger.error(
+            "REFERRAL ERROR: %s",
+            e,
+            exc_info=True
+        )
 
 
-# =========================
-# ERROR
-# =========================
+# =========================================================
+# ERROR HANDLER
+# =========================================================
 
 async def error_handler(
     update,
@@ -435,26 +510,31 @@ async def error_handler(
 ):
 
     logger.error(
-        "Bot error:",
-        exc_info=context.error
+        "BOT ERROR: %s",
+        context.error,
+        exc_info=True
     )
 
 
-# =========================
+# =========================================================
 # MAIN
-# =========================
+# =========================================================
 
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN topilmadi!"
         )
 
     if not DATABASE_URL:
+
         raise RuntimeError(
             "DATABASE_URL topilmadi!"
         )
+
+    logger.info("Starting AstrumMED bot...")
 
     init_db()
 
@@ -490,7 +570,13 @@ def main():
         error_handler
     )
 
-    application.run_polling()
+    logger.info("Bot is starting polling...")
+
+    # Eski Telegram update'larini tashlab,
+    # botni toza holatda boshlaydi.
+    application.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
