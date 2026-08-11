@@ -1,6 +1,6 @@
 import os
+import json
 import logging
-import psycopg
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -10,12 +10,11 @@ from telegram.ext import (
     ContextTypes,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# =========================
+# =====================================================
 # SOZLAMALAR
-# =========================
+# =====================================================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 CHANNEL = "@AstrumMED"
 CHANNEL_URL = "https://t.me/AstrumMED"
@@ -24,9 +23,11 @@ YOUTUBE_URL = "https://youtube.com/@astrummed_1"
 
 ADMIN_ID = 1955686748
 
-# =========================
+DATA_FILE = "users.json"
+
+# =====================================================
 # LOGGING
-# =========================
+# =====================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -36,229 +37,89 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# =========================
-# DATABASE
-# =========================
+# =====================================================
+# DATABASE O'RNIGA JSON
+# =====================================================
 
-def db():
-    return psycopg.connect(DATABASE_URL)
+def load_users():
 
+    if not os.path.exists(DATA_FILE):
+        return {}
 
-def init_db():
+    try:
+        with open(
+            DATA_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
 
-    with db() as conn:
+            return json.load(file)
 
-        with conn.cursor() as cur:
+    except Exception:
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    first_name TEXT,
-                    username TEXT,
-                    referred_by BIGINT,
-                    referral_count INTEGER DEFAULT 0,
-                    referral_counted BOOLEAN DEFAULT FALSE,
-                    telegram_verified BOOLEAN DEFAULT FALSE,
-                    discount_received BOOLEAN DEFAULT FALSE
-                )
-            """)
-
-            # Eski jadval bo‘lsa, yangi ustunlarni qo‘shish
-            cur.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS first_name TEXT
-            """)
-
-            cur.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS username TEXT
-            """)
-
-            cur.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS discount_received BOOLEAN DEFAULT FALSE
-            """)
-
-        conn.commit()
-
-    logger.info("Database initialized")
+        return {}
 
 
-# =========================
-# FOYDALANUVCHI QO‘SHISH
-# =========================
+def save_users(users):
 
-def add_user(
+    with open(
+        DATA_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        json.dump(
+            users,
+            file,
+            ensure_ascii=False,
+            indent=2
+        )
+
+
+def get_user(users, user_id):
+
+    return users.get(str(user_id))
+
+
+# =====================================================
+# FOYDALANUVCHI YARATISH
+# =====================================================
+
+def create_user(
+    users,
     user_id,
     first_name,
     username,
     referred_by=None
 ):
 
-    with db() as conn:
+    user_key = str(user_id)
 
-        with conn.cursor() as cur:
+    if user_key not in users:
 
-            cur.execute(
-                """
-                INSERT INTO users (
-                    user_id,
-                    first_name,
-                    username,
-                    referred_by
-                )
-                VALUES (%s, %s, %s, %s)
+        users[user_key] = {
+            "user_id": user_id,
+            "first_name": first_name,
+            "username": username,
+            "referred_by": referred_by,
+            "referral_count": 0,
+            "referral_counted": False,
+            "telegram_verified": False,
+            "discount_received": False,
+        }
 
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                    first_name = EXCLUDED.first_name,
-                    username = EXCLUDED.username
-                """,
-                (
-                    user_id,
-                    first_name,
-                    username,
-                    referred_by,
-                ),
-            )
+    else:
 
-        conn.commit()
+        # Ism yoki username o'zgargan bo'lishi mumkin
+        users[user_key]["first_name"] = first_name
+        users[user_key]["username"] = username
+
+    save_users(users)
 
 
-# =========================
-# USER OLISH
-# =========================
-
-def get_user(user_id):
-
-    with db() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                SELECT
-                    user_id,
-                    first_name,
-                    username,
-                    referred_by,
-                    referral_count,
-                    referral_counted,
-                    telegram_verified,
-                    discount_received
-                FROM users
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            return cur.fetchone()
-
-
-# =========================
-# TELEGRAM OBUNA
-# =========================
-
-async def is_subscribed(
-    bot,
-    user_id
-):
-
-    try:
-
-        member = await bot.get_chat_member(
-            chat_id=CHANNEL,
-            user_id=user_id
-        )
-
-        return member.status in (
-            "member",
-            "administrator",
-            "creator",
-            "restricted"
-        )
-
-    except Exception as e:
-
-        logger.error(
-            "Subscription error: %s",
-            e,
-            exc_info=True
-        )
-
-        return False
-
-
-# =========================
-# REFERRAL HISOBLASH
-# =========================
-
-def count_referral(user_id):
-
-    user = get_user(user_id)
-
-    if not user:
-        return None
-
-    referred_by = user[3]
-    already_counted = user[5]
-
-    if not referred_by:
-        return None
-
-    if already_counted:
-        return None
-
-    if referred_by == user_id:
-        return None
-
-    with db() as conn:
-
-        with conn.cursor() as cur:
-
-            # Foydalanuvchining referral'i hisoblanganini belgilash
-            cur.execute(
-                """
-                UPDATE users
-                SET referral_counted = TRUE
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-
-            # Taklif qilgan odamga +1
-            cur.execute(
-                """
-                UPDATE users
-                SET referral_count = referral_count + 1
-                WHERE user_id = %s
-                """,
-                (referred_by,),
-            )
-
-            # Taklif qilgan odamning yangi sonini olish
-            cur.execute(
-                """
-                SELECT referral_count
-                FROM users
-                WHERE user_id = %s
-                """,
-                (referred_by,),
-            )
-
-            result = cur.fetchone()
-
-        conn.commit()
-
-    if result:
-        return result[0]
-
-    return None
-
-
-# =========================
+# =====================================================
 # START
-# =========================
+# =====================================================
 
 async def start(
     update: Update,
@@ -273,9 +134,14 @@ async def start(
 
     username = user.username
 
+    users = load_users()
+
     referred_by = None
 
-    # /start 123456789
+    # -------------------------------------------------
+    # /start 123456
+    # -------------------------------------------------
+
     if context.args:
 
         try:
@@ -284,14 +150,12 @@ async def start(
                 context.args[0]
             )
 
+            # O'zini o'zi taklif qilmasin
             if possible_referrer != user_id:
 
-                # Faqat haqiqiy mavjud user bo‘lsa
-                referrer = get_user(
-                    possible_referrer
-                )
-
-                if referrer:
+                # Taklif qilgan odam haqiqatan botda
+                # ro'yxatdan o'tgan bo'lishi kerak
+                if str(possible_referrer) in users:
 
                     referred_by = possible_referrer
 
@@ -299,13 +163,22 @@ async def start(
 
             referred_by = None
 
-    # Userni bazaga qo‘shamiz
-    add_user(
-        user_id=user_id,
-        first_name=first_name,
-        username=username,
-        referred_by=referred_by
+    # -------------------------------------------------
+    # User yaratish
+    # -------------------------------------------------
+
+    create_user(
+        users,
+        user_id,
+        first_name,
+        username,
+        referred_by
     )
+
+    # -------------------------------------------------
+    # Agar user oldindan mavjud bo'lsa,
+    # referred_by ni qayta o'zgartirmaymiz
+    # -------------------------------------------------
 
     keyboard = [
 
@@ -326,7 +199,7 @@ async def start(
         [
             InlineKeyboardButton(
                 "✅ Obunani tekshirish",
-                callback_data="check_subscription"
+                callback_data="check"
             )
         ],
 
@@ -349,9 +222,9 @@ async def start(
     )
 
 
-# =========================
-# OBUNANI TEKSHIRISH
-# =========================
+# =====================================================
+# TELEGRAM OBUNASINI TEKSHIRISH
+# =====================================================
 
 async def check_subscription(
     update: Update,
@@ -364,10 +237,59 @@ async def check_subscription(
 
     user_id = query.from_user.id
 
-    subscribed = await is_subscribed(
-        context.bot,
-        user_id
-    )
+    users = load_users()
+
+    user_key = str(user_id)
+
+    # User mavjudligini tekshirish
+    if user_key not in users:
+
+        users[user_key] = {
+            "user_id": user_id,
+            "first_name": query.from_user.first_name
+                or "Foydalanuvchi",
+            "username": query.from_user.username,
+            "referred_by": None,
+            "referral_count": 0,
+            "referral_counted": False,
+            "telegram_verified": False,
+            "discount_received": False,
+        }
+
+        save_users(users)
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=CHANNEL,
+            user_id=user_id
+        )
+
+        subscribed = member.status in (
+            "member",
+            "administrator",
+            "creator",
+            "restricted"
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "Subscription error: %s",
+            e,
+            exc_info=True
+        )
+
+        await query.edit_message_text(
+            "⚠️ Obunani tekshirishda xatolik yuz berdi.\n\n"
+            "Iltimos, birozdan keyin qayta urinib ko‘ring."
+        )
+
+        return
+
+    # =================================================
+    # OBUNA YO'Q
+    # =================================================
 
     if not subscribed:
 
@@ -383,7 +305,7 @@ async def check_subscription(
             [
                 InlineKeyboardButton(
                     "🔄 Qayta tekshirish",
-                    callback_data="check_subscription"
+                    callback_data="check"
                 )
             ],
 
@@ -404,57 +326,73 @@ async def check_subscription(
 
         return
 
-    # Telegram obunasi tasdiqlandi
-    with db() as conn:
+    # =================================================
+    # OBUNA BOR
+    # =================================================
 
-        with conn.cursor() as cur:
+    users[user_key]["telegram_verified"] = True
 
-            cur.execute(
-                """
-                UPDATE users
-                SET telegram_verified = TRUE
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
+    # =================================================
+    # REFERRALNI HISOBLASH
+    # =================================================
 
-        conn.commit()
-
-    # Referralni hisoblash
-    new_referral_count = count_referral(
-        user_id
+    referred_by = users[user_key].get(
+        "referred_by"
     )
 
-    # Hozirgi user ma'lumoti
-    user = get_user(user_id)
+    already_counted = users[user_key].get(
+        "referral_counted",
+        False
+    )
 
-    referral_count = user[4]
+    if (
+        referred_by
+        and not already_counted
+        and str(referred_by) in users
+        and referred_by != user_id
+    ):
 
-    # =========================
-    # 5/5 BO‘LDI
-    # =========================
+        referrer_key = str(referred_by)
+
+        users[referrer_key]["referral_count"] += 1
+
+        users[user_key]["referral_counted"] = True
+
+        logger.info(
+            "Referral counted: %s -> %s",
+            referred_by,
+            user_id
+        )
+
+    save_users(users)
+
+    # =================================================
+    # TAKLIF QILGAN ODAMNING HOLATI
+    # =================================================
+
+    current_user = users[user_key]
+
+    referral_count = current_user.get(
+        "referral_count",
+        0
+    )
+
+    # =================================================
+    # 5/5 BO'LDI
+    # =================================================
 
     if referral_count >= 5:
 
-        # Oldin tabriklangan bo‘lsa qayta bermaymiz
-        discount_received = user[7]
+        if not current_user.get(
+            "discount_received",
+            False
+        ):
 
-        if not discount_received:
+            current_user[
+                "discount_received"
+            ] = True
 
-            with db() as conn:
-
-                with conn.cursor() as cur:
-
-                    cur.execute(
-                        """
-                        UPDATE users
-                        SET discount_received = TRUE
-                        WHERE user_id = %s
-                        """,
-                        (user_id,),
-                    )
-
-                conn.commit()
+            save_users(users)
 
             await query.edit_message_text(
 
@@ -481,9 +419,9 @@ async def check_subscription(
 
         return
 
-    # =========================
-    # REFERAL LINK
-    # =========================
+    # =================================================
+    # SHAXSIY REFERAL LINK
+    # =================================================
 
     bot_info = await context.bot.get_me()
 
@@ -496,15 +434,15 @@ async def check_subscription(
     share_url = (
         "https://t.me/share/url"
         f"?url={referral_link}"
-        "&text=Terapiya kitoblariga maxsus chegirma olish uchun "
-        "shu botga kiring:"
+        "&text=Terapiya kitoblariga maxsus chegirma "
+        "olish uchun shu botga kiring:"
     )
 
     keyboard = [
 
         [
             InlineKeyboardButton(
-                "👥 Do‘stlarni taklif qilish",
+                "📤 5 ta do‘stga yuborish",
                 url=share_url
             )
         ],
@@ -512,7 +450,7 @@ async def check_subscription(
         [
             InlineKeyboardButton(
                 "🔄 Natijani tekshirish",
-                callback_data="check_subscription"
+                callback_data="check"
             )
         ],
 
@@ -526,13 +464,13 @@ async def check_subscription(
         f"{referral_count}/5\n\n"
 
         f"📤 Quyidagi tugma orqali "
-        f"do‘stlaringizni taklif qiling.\n\n"
+        f"shaxsiy havolangizni do‘stlaringizga yuboring.\n\n"
 
         f"⚠️ Do‘stingiz sizning havolangiz orqali "
         f"botga kirib, @AstrumMED kanaliga "
         f"obuna bo‘lgandan keyin hisoblanadi.\n\n"
 
-        f"🔗 Shaxsiy havolangiz:\n"
+        f"🔗 Sizning shaxsiy havolangiz:\n"
         f"{referral_link}",
 
         reply_markup=InlineKeyboardMarkup(
@@ -541,9 +479,9 @@ async def check_subscription(
     )
 
 
-# =========================
+# =====================================================
 # ADMIN STATISTIKA
-# =========================
+# =====================================================
 
 async def stats(
     update: Update,
@@ -562,23 +500,7 @@ async def stats(
 
         return
 
-    with db() as conn:
-
-        with conn.cursor() as cur:
-
-            cur.execute(
-                """
-                SELECT
-                    first_name,
-                    username,
-                    referral_count
-                FROM users
-                ORDER BY referral_count DESC,
-                         first_name ASC
-                """
-            )
-
-            users = cur.fetchall()
+    users = load_users()
 
     if not users:
 
@@ -588,21 +510,31 @@ async def stats(
 
         return
 
+    # Eng ko'p referral olib kelganlar yuqorida
+    sorted_users = sorted(
+        users.values(),
+        key=lambda x: (
+            x.get("referral_count", 0),
+            x.get("first_name", "")
+        ),
+        reverse=True
+    )
+
     text = "📊 REFERRAL STATISTIKA\n\n"
 
-    for first_name, username, referral_count in users:
+    for user in sorted_users:
 
-        name = first_name or "Noma'lum"
+        name = user.get(
+            "first_name",
+            "Noma'lum"
+        )
 
-        if username:
+        count = user.get(
+            "referral_count",
+            0
+        )
 
-            display_name = f"{name} (@{username})"
-
-        else:
-
-            display_name = name
-
-        if referral_count >= 5:
+        if count >= 5:
 
             status = "✅"
 
@@ -611,8 +543,8 @@ async def stats(
             status = ""
 
         text += (
-            f"{display_name} — "
-            f"{referral_count}/5 "
+            f"{name} — "
+            f"{count}/5 "
             f"{status}\n"
         )
 
@@ -621,9 +553,56 @@ async def stats(
     )
 
 
-# =========================
+# =====================================================
+# ADMIN: JAMI STATISTIKA
+# =====================================================
+
+async def total_stats(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "⛔ Ruxsat yo‘q."
+        )
+
+        return
+
+    users = load_users()
+
+    total_users = len(users)
+
+    completed = sum(
+        1
+        for user in users.values()
+        if user.get("referral_count", 0) >= 5
+    )
+
+    text = (
+        "📊 ASTRUMMED BOT\n\n"
+
+        f"👥 Jami foydalanuvchilar: "
+        f"{total_users}\n\n"
+
+        f"🎯 5/5 bajarganlar: "
+        f"{completed}\n\n"
+
+        f"⏳ Jarayondagilar: "
+        f"{total_users - completed}"
+    )
+
+    await update.message.reply_text(
+        text
+    )
+
+
+# =====================================================
 # ERROR
-# =========================
+# =====================================================
 
 async def error_handler(
     update,
@@ -637,9 +616,9 @@ async def error_handler(
     )
 
 
-# =========================
+# =====================================================
 # MAIN
-# =========================
+# =====================================================
 
 def main():
 
@@ -648,14 +627,6 @@ def main():
         raise RuntimeError(
             "BOT_TOKEN topilmadi!"
         )
-
-    if not DATABASE_URL:
-
-        raise RuntimeError(
-            "DATABASE_URL topilmadi!"
-        )
-
-    init_db()
 
     app = (
         Application
@@ -680,11 +651,19 @@ def main():
         )
     )
 
-    # Obunani tekshirish
+    # /total
+    app.add_handler(
+        CommandHandler(
+            "total",
+            total_stats
+        )
+    )
+
+    # Obuna tekshirish
     app.add_handler(
         CallbackQueryHandler(
             check_subscription,
-            pattern="^check_subscription$"
+            pattern="^check$"
         )
     )
 
@@ -701,5 +680,10 @@ def main():
     )
 
 
+# =====================================================
+# START BOT
+# =====================================================
+
 if __name__ == "__main__":
+
     main()
