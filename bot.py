@@ -15,8 +15,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL = "@AstrumMED"
 CHANNEL_URL = "https://t.me/AstrumMED"
 
-# YouTube
+# YouTube kanal
 YOUTUBE_URL = "https://youtube.com/@astrummed_1"
+
+
+# =========================
+# LOGGING
+# =========================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -57,13 +62,11 @@ async def start(
     ]
 
     text = (
-        "👋 Assalomu alaykum!\n\n"
-        "🎓 Maxsus materialga ega bo‘lish uchun "
-        "quyidagi shartlarni bajaring:\n\n"
-        "1️⃣ Telegram kanalimizga obuna bo‘ling.\n"
-        "2️⃣ YouTube kanalimizga obuna bo‘ling.\n"
-        "3️⃣ «Obunani tekshirish» tugmasini bosing.\n\n"
-        "👇 Quyidagi tugmalardan foydalaning:"
+        "Assalomu alaykum, hurmatli doktor! 👋\n\n"
+        "📚 AstrumMED kanaliga tegishli Terapiya kitoblari "
+        "uchun maxsus chegirmaga ega bo‘lmoqchi bo‘lsangiz, "
+        "quyidagi kanallarga obuna bo‘lishingiz va "
+        "maxsus linkni olishingizni so‘raymiz!"
     )
 
     await update.message.reply_text(
@@ -116,13 +119,17 @@ async def check_subscription(
 
         return
 
+
+    # =========================
     # OBUNA BO'LMAGAN
+    # =========================
+
     if not subscribed:
 
         keyboard = [
             [
                 InlineKeyboardButton(
-                    "📢 Kanalga obuna bo‘lish",
+                    "📢 Telegram kanaliga obuna bo‘lish",
                     url=CHANNEL_URL
                 )
             ],
@@ -144,7 +151,11 @@ async def check_subscription(
 
         return
 
+
+    # =========================
     # OBUNA BO'LGAN
+    # =========================
+
     keyboard = [
         [
             InlineKeyboardButton(
@@ -183,14 +194,14 @@ async def next_step(
 
     await query.edit_message_text(
         "🎉 Birinchi bosqich muvaffaqiyatli bajarildi!\n\n"
-        "Telegram kanal obunasi tasdiqlandi.\n\n"
+        "✅ Telegram kanal obunasi tasdiqlandi.\n\n"
         "👥 Keyingi bosqichda 5 ta do‘stni taklif qilish "
         "tizimini qo‘shamiz."
     )
 
 
 # =========================
-# ERROR
+# ERROR HANDLER
 # =========================
 
 async def error_handler(
@@ -248,7 +259,9 @@ def main():
         error_handler
     )
 
-    logger.info("AstrumMED bot started successfully")
+    logger.info(
+        "AstrumMED bot started successfully"
+    )
 
     app.run_polling(
         drop_pending_updates=True
